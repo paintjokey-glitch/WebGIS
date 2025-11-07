@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <title>Mini</title>
+
+  <!-- Font -->
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap" rel="stylesheet">
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+ 
+  <!-- Mouse Position Plugin -->
+  <link rel="stylesheet" href="L.Control.MousePosition.css"/>
+  <script src="L.Control.MousePosition.js"></script>
+
+  <!-- Leaflet AJAX + jQuery -->
+  <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/leaflet-ajax/2.1.0/leaflet.ajax.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet-ajax/2.1.0/leaflet.ajax.js"></script>
+  <script src="https://code.jquery.com/jquery-1.11.3.min.js"></script>
+
+  <style>
+    body { font-family: 'Poppins', 'Sarabun', sans-serif; margin:0; background: linear-gradient(135deg, #9bb3d5, #4a90e2); color:#f8f9fa; }
+    h1 { text-align:center; font-size:32px; color:#fff; background:#004d99; margin:0; padding:20px 10px; border-bottom:4px solid #ffcc00; text-shadow:1px 2px 4px rgba(0,0,0,0.3);}
+    #map { height:85vh; width:95%; margin:20px auto; border-radius:20px; border:3px solid #004d99; box-shadow:0 6px 20px rgba(0,0,0,0.3);}
+    #STATUS { margin:15px auto; padding:12px 16px; width: fit-content; background:#004d99; border-radius:10px; color:#ffeb99; font-weight:600; box-shadow:0 3px 8px rgba(0,0,0,0.25);}
+    .info { padding:10px 14px; background: rgba(0,77,153,0.9); color:#fff; font-size:14px; border-radius:12px; box-shadow:0 3px 10px rgba(0,0,0,0.3);}
+    .info h4 { margin:0 0 5px; font-size:16px; color:#ffeb99; text-align:center;}
+    .leaflet-popup-content { font-size:14px; line-height:1.4em; }
+    .leaflet-popup-content-wrapper { border-radius:12px; padding:10px; background:#f8f9fa; color:#333; box-shadow:0 4px 12px rgba(0,0,0,0.25);}
+    .leaflet-control-layers { background: rgba(255,255,255,0.95); border-radius:12px; padding:8px; font-size:13px; box-shadow:0 3px 8px rgba(0,0,0,0.25);}
+    .leaflet-control-mouseposition { background: rgba(0,0,0,0.6); color: #fff; font-size:13px; padding:4px 8px; border-radius:6px;}
+    path.leaflet-interactive:hover { stroke:#fff; stroke-width:3; cursor:pointer; }
+  </style>
+</head>
+
+<body>
+<h1>Mini</h1>
+<div id="map"></div>
+<div id="STATUS">ระบบพร้อมทำงาน</div>
+
+<script>
+  // ---------------- สร้างแผนที่ ----------------
+  var map = L.map('map').setView([16.744,100.1911],7);
+
+  // ---------------- Base Layers ----------------
+  var osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors'}).addTo(map);
+  var google_map = L.tileLayer('https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}',{maxZoom:20, subdomains:['mt0','mt1','mt2','mt3']});
+
+  // ---------------- Mouse Position ----------------
+  L.control.mousePosition().addTo(map);
+
+  // ---------------- Popup Function สำหรับ GeoJSON ----------------
+  function createPopup(feature, layer){
+    if(feature.properties){
+      let content = [];
+      for(let key in feature.properties){
+        content.push("<b>"+key+":</b> "+feature.properties[key]);
+      }
+      layer.bindPopup(content.join("<br>"));
+    }
+  }
+
+  function styleFeature(feature){ return {color:"#3388ff", weight:1, fillOpacity:0.3}; }
+  function onEachProvince(feature, layer){
+    if(feature.properties && feature.properties.prov_nam_t){
+      layer.bindPopup("จังหวัด: "+feature.properties.prov_nam_t);
+    }
+  }
+
+  // ---------------- โหลดข้อมูลจังหวัด ----------------
+  var ThaiProvJSON = new L.GeoJSON.AJAX(["data/thai_province.geojson"], {onEachFeature: createPopup}).addTo(map);
+  var jsonProv = L.geoJSON(null,{style:styleFeature,onEachFeature:onEachProvince});
+  $.ajax({
+    dataType:"json",
+    url:"json_sql.php",
+    success:function(data){ 
+      $(data.features).each(function(key,data){ jsonProv.addData(data); }); 
+    },
+    error:function(err){ console.log('error geojson'); }
+  });
+
+  // ---------------- Info Box ----------------
+  var info = L.control({ position:'topleft' });
+  info.onAdd = function(map){
+    var div = L.DomUtil.create('div','info');
+    div.innerHTML = '<h4>แผนที่แสดงข้อมูลฝน</h4>';
+    return div;
+  };
+  info.addTo(map);
+
+  // ---------------- Click เพื่อค้นหาตามระยะ ----------------
+  var showpoint = L.geoJSON().addTo(map);
+  var marker_arr_click = [];
+
+  map.on("click",function(e){
+    marker_arr_click.forEach(m=>map.removeLayer(m));
+    marker_arr_click = [];
+
+    var ct = "<center><h3>Search By Distance</h3></center>";
+    ct += "Lat: <input type='text' id='lat' value='"+e.latlng.lat+"'><br>";
+    ct += "Lng: <input type='text' id='lng' value='"+e.latlng.lng+"'><br>";
+    ct += "Distance: <input type='text' id='distance'><br><br>";
+    ct += "<center><button onclick='sendtodb();'>Submit</button></center>";
+
+    var marker = L.marker([e.latlng.lat,e.latlng.lng]).addTo(map).bindPopup(ct).openPopup();
+    marker_arr_click.push(marker);
+  });
+
+  function sendtodb(){
+    if(showpoint) showpoint.clearLayers();
+    var lat = parseFloat(document.getElementById("lat").value);
+    var lng = parseFloat(document.getElementById("lng").value);
+    var distance = parseFloat(document.getElementById("distance").value);
+
+    document.getElementById("STATUS").innerText = "กำลังค้นหาข้อมูล...";
+
+    $.ajax({
+      url:"query.php",
+      type:"GET",
+      dataType:"json",
+      data:{lat:lat,lng:lng,distance:distance},
+      success:function(data){
+        showpoint = L.geoJSON(data,{
+          onEachFeature:function(feature,layer){
+            layer.bindPopup("<b>ชื่อ:</b> "+feature.properties.lm_name+"<br><b>GID:</b> "+feature.properties.gid);
+          }
+        }).addTo(map);
+        document.getElementById("STATUS").innerText = "ค้นหาข้อมูลสำเร็จ ✅";
+      },
+      error:function(err){
+        console.error(err);
+        alert("Ajax error occurred");
+        document.getElementById("STATUS").innerText = "เกิดข้อผิดพลาด ❌";
+      }
+    });
+  }
+
+  var road = L.tileLayer.wms("http://localhost:8080/geoserver/utt/wms", { layers: 'utt:road', format: 'image/png', transparent: true, opacity: 0.7 });
+  var gcp = L.tileLayer.wms("http://localhost:8080/geoserver/utt/wms", { layers: 'utt:gcp', format: 'image/png', transparent: true, opacity: 0.7 });
+  var district = L.tileLayer.wms("http://localhost:8080/geoserver/utt/wms", { layers: 'utt:district', format: 'image/png', transparent: true, opacity: 0.5 });
+
+  // ---------------- Double Click เพื่อเพิ่มข้อมูล ----------------
+  var showpoint1 = L.geoJSON().addTo(map);
+  var marker_arr_dblclick = [];
+
+  map.on("dblclick",function(e){
+    marker_arr_dblclick.forEach(m=>map.removeLayer(m));
+    marker_arr_dblclick = [];
+
+    var ct = "<center><h3>Add clicked location data</h3></center>";
+    ct += "Lat: <input type='text' id='lat' value='"+e.latlng.lat+"'><br>";
+    ct += "Lng: <input type='text' id='lng' value='"+e.latlng.lng+"'><br>";
+    ct += "Name: <input type='text' id='name'><br><br>";
+    ct += "<center><button onclick='inserttodb();'>Submit</button></center>";
+
+    var marker1 = L.marker([e.latlng.lat,e.latlng.lng]).addTo(map).bindPopup(ct).openPopup();
+    marker_arr_dblclick.push(marker1);
+  });
+
+  map.on("contextmenu", function(e){
+    marker_arr_click.forEach(m => map.removeLayer(m));
+    marker_arr_click = [];
+    marker_arr_dblclick.forEach(m => map.removeLayer(m));
+    marker_arr_dblclick = [];
+  });
+
+  function inserttodb(){
+    if(showpoint1) showpoint1.clearLayers();
+    var lat = document.getElementById("lat").value;  
+    var lng = document.getElementById("lng").value;  
+    var name = document.getElementById("name").value;  
+    console.log("Input:", lat, lng, name);  
+
+    document.getElementById("STATUS").innerText = "กำลังเพิ่มข้อมูล...";
+
+    $.ajax({  
+      url: 'insert.php',  
+      type: 'POST',  
+      dataType: 'json',  
+      data: { lat: lat, lng: lng, name: name },  
+      success: function(pointjson1){  
+        showpoint1 = L.geoJSON(pointjson1).addTo(map);  
+        document.getElementById("STATUS").innerText = "เพิ่มข้อมูลสำเร็จ ✅";  
+      },  
+      error: function(err){  
+        console.error("Insert error:", err);  
+        alert("เกิดข้อผิดพลาดในการเพิ่มข้อมูล");  
+        document.getElementById("STATUS").innerText = "เพิ่มข้อมูลล้มเหลว ❌";  
+      }  
+    });  
+  }
+
+   const thailand_rain24h = L.layerGroup();
+  const API_RAIN24H = 'https://api-v3.thaiwater.net/api/v1/thaiwater30/public/rain_24h';
+  var rain24_icon = L.icon({ iconUrl: 'images/rains.png', iconSize: [40, 40], iconAnchor: [16, 16], popupAnchor: [0, -16] });
+
+  async function loadRain24h(){
+    document.getElementById("STATUS").textContent = 'กำลังโหลดข้อมูลฝน 24 ชั่วโมง…';
+    thailand_rain24h.clearLayers();
+    try{
+      const response = await fetch(API_RAIN24H);
+      const json = await response.json();
+      const rows = Array.isArray(json) ? json : (json?.data || []);
+      rows.forEach(function(station){
+        var st = station?.station || {};
+        var stationLat  = st?.tele_station_lat;
+        var stationLong = st?.tele_station_long;
+        if (!stationLat || !stationLong) return;
+        var stationName = st?.tele_station_name?.th || 'สถานีฝน';
+        var oldcode     = st?.tele_station_oldcode || '';
+        var rainfall    = station?.rainfall_datetime || station?.datetime || '';
+        var rainh       = station?.rainfall || station?.rain_24h || '';
+        var cont = `<b>ชื่อสถานี</b> : ${stationName}<br>
+                    <b>รหัสสถานี</b> : ${oldcode}<br>
+                    <b>ข้อมูลวันที่</b> : ${rainfall}<br>
+                    <b>ปริมาณฝน 24 ชม.</b> : ${rainh} มม.`;
+        L.marker([stationLat, stationLong], { icon: rain24_icon }).bindPopup(cont).addTo(thailand_rain24h);
+      });
+      document.getElementById("STATUS").textContent = 'โหลดฝน 24 ชั่วโมงสำเร็จ';
+    }catch(err){ console.error(err); document.getElementById("STATUS").textContent = 'โหลดข้อมูลฝน 24 ชั่วโมงไม่สำเร็จ'; }
+  }
+
+  const thailand_main_rain = L.layerGroup();
+  const API_RAIN = 'https://api-v3.thaiwater.net/api/v1/thaiwater30/public/thailand_main_rain?province_code=65';
+  var rain_main = L.icon({ iconUrl: 'images/rains.png', iconSize: [50, 50], iconAnchor: [16, 16], popupAnchor: [0, -16] });
+
+  async function loadMainRain(){
+    document.getElementById("STATUS").textContent = 'กำลังโหลดข้อมูลฝนหลัก…';
+    thailand_main_rain.clearLayers();
+    try{
+      const response = await fetch(API_RAIN);
+      const json = await response.json();
+      const rows = Array.isArray(json) ? json : (json?.data || []);
+      rows.forEach(function(station){
+        var st = station?.station || {};
+        var stationLat  = st?.tele_station_lat;
+        var stationLong = st?.tele_station_long;
+        if (!stationLat || !stationLong) return;
+        var stationName = st?.tele_station_name?.th || 'สถานีฝน';
+        var oldcode     = st?.tele_station_oldcode || '';
+        var rainfall    = station?.rainfall_datetime || station?.datetime || '';
+        var rainh       = station?.rain_24h ?? station?.rainfall_24h ?? '';
+        var cont = `<b>ชื่อสถานี</b> : ${stationName}<br>
+<b>รหัสสถานี</b> : ${oldcode}<br>
+<b>ข้อมูลวันที่</b> : ${rainfall}<br>
+<b>ปริมาณฝน 24 ชม.</b> : ${rainh}`;
+        L.marker([stationLat, stationLong], { icon: rain_main }).bindPopup(cont).addTo(thailand_main_rain);
+      });
+      document.getElementById("STATUS").textContent = 'โหลดฝนหลักสำเร็จ';
+    }catch(err){ console.error(err); document.getElementById("STATUS").textContent = 'โหลดข้อมูลฝนหลักไม่สำเร็จ'; }
+  }
+
+  loadRain24h();
+  loadMainRain();
+
+  // ---------------- Refresh Rain Data Every 5 Minutes ----------------
+  setInterval(() => { loadRain24h(); loadMainRain(); }, 300000);
+
+  map.doubleClickZoom.disable();
+
+  // ---------------- Layer Control ----------------
+  var baseLayers = { "OpenStreetMap": osm, "Google Map": google_map };
+  var overlays = { "จังหวัด (Province)": ThaiProvJSON,"ฝนทั่วประเทศ": thailand_rain24h,
+    "ฝนพิษณุโลก": thailand_main_rain,
+    "ถนนอุติด": road,
+    "gcp": gcp,
+    "เขต": district
+   };
+
+  L.control.layers(baseLayers, overlays).addTo(map);
+</script>
+</body>
+</html>
+
